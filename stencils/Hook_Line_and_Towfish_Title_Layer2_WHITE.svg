@@ -4,7 +4,7 @@
   <defs>
     <style>
       .title {
-        font-family: Bahnschrift, "Arial Black", Arial, sans-serif;
+        font-family: "Agency FB", Impact, "Arial Black", Arial, sans-serif;
         font-weight: 800;
         letter-spacing: 1px;
       }
@@ -15,7 +15,7 @@
   <g id="BLACK_OUTLINE" fill="none" stroke="#000000" stroke-linejoin="round">
     <text class="title top" x="34" y="82" stroke-width="9">Hook Line and</text>
     <text class="title bottom" x="34" y="176" stroke-width="10">Towfish</text>
-    <g transform="translate(390 96)" stroke="#000000" stroke-linecap="round" stroke-linejoin="round">
+    <g transform="translate(318 96)" stroke="#000000" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="36" cy="15" r="11" fill="none" stroke-width="11"/>
       <path d="M36 29v68" fill="none" stroke-width="11"/>
       <path d="M17 52h38" fill="none" stroke-width="11"/>
@@ -27,7 +27,7 @@
   <g id="WHITE_FILL" fill="#ffffff">
     <text class="title top" x="34" y="82">Hook Line and</text>
     <text class="title bottom" x="34" y="176">Towfish</text>
-    <g transform="translate(390 96)" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round">
+    <g transform="translate(318 96)" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="36" cy="15" r="11" fill="none" stroke-width="6.5"/>
       <path d="M36 29v68" fill="none" stroke-width="6.5"/>
       <path d="M17 52h38" fill="none" stroke-width="6.5"/>
