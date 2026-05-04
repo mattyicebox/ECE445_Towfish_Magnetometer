@@ -1,0 +1,1 @@
+The BOM includes the SMBJ6.0CALFCT-ND Diode. Digikey originally described it as having a breakdown voltage of 95V, but it's actually 6V. A different bidirectional diode will need to be found.
