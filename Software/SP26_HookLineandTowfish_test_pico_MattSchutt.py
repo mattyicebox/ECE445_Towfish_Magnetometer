@@ -6,27 +6,27 @@ from machine import Pin, UART
 import utime
 
 
-# ----------------------- Status LED -----------------------
+# Onboard LED blink for confirming Pico power from the Pi Zero during debugging.
 try:
-    STATUS_LED = Pin("LED", Pin.OUT)
+    ONBOARD_LED = Pin("LED", Pin.OUT)
 except Exception:
-    STATUS_LED = Pin(25, Pin.OUT)
+    ONBOARD_LED = Pin(25, Pin.OUT)
 
-STATUS_LED.value(0)
-HEARTBEAT_MS = const(1000)
-last_heartbeat_ms = utime.ticks_ms()
+ONBOARD_LED.value(0)
+LED_BLINK_MS = const(1000)
+last_led_blink_ms = utime.ticks_ms()
 
 
-def update_status_led():
-    global last_heartbeat_ms
+def blink_onboard_led():
+    global last_led_blink_ms
 
     now = utime.ticks_ms()
-    if utime.ticks_diff(now, last_heartbeat_ms) >= HEARTBEAT_MS:
-        STATUS_LED.toggle()
-        last_heartbeat_ms = now
+    if utime.ticks_diff(now, last_led_blink_ms) >= LED_BLINK_MS:
+        ONBOARD_LED.toggle()
+        last_led_blink_ms = now
 
 
-# ----------------------- UART and GPS -----------------------
+# UART and GPS
 # UART0 = Pi Zero: Pico GP0 TX -> Zero RX, Pico GP1 RX <- Zero TX
 # UART1 = GT-U7 GPS: Pico GP5 RX <- GPS TX. Pico GP4 TX is available if needed.
 uart_zero = UART(0, baudrate=9600, tx=Pin(0), rx=Pin(1), timeout=50)
@@ -126,7 +126,7 @@ TEST_MESSAGES = [
 print("TEST PICO READY")
 
 while True:
-    update_status_led()
+    blink_onboard_led()
     drain_gps(5)
 
     command = read_command()

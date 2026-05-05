@@ -6,27 +6,38 @@ import utime
 import uarray as array
 
 
-# ----------------------- Status LED -----------------------
+# Modified Pico measurement and GPS UART.
+# This is the charging-aware version. It leaves pico_measure_uart.py alone,
+# but adds one command:
+#
+#   GPS_ONLY
+#
+# That command only drains the GPS UART and sends the newest lat/lon back to
+# the Pi Zero. No measurement hardware gets poked, which is the whole point
+# while the boat is charging.
+
+
+# Onboard LED blink for confirming Pico power from the Pi Zero during debugging.
 try:
-    STATUS_LED = Pin("LED", Pin.OUT)
+    ONBOARD_LED = Pin("LED", Pin.OUT)
 except Exception:
-    STATUS_LED = Pin(25, Pin.OUT)
+    ONBOARD_LED = Pin(25, Pin.OUT)
 
-STATUS_LED.value(0)
-HEARTBEAT_MS = const(1000)
-last_heartbeat_ms = utime.ticks_ms()
+ONBOARD_LED.value(0)
+LED_BLINK_MS = const(1000)
+last_led_blink_ms = utime.ticks_ms()
 
 
-def update_status_led():
-    global last_heartbeat_ms
+def blink_onboard_led():
+    global last_led_blink_ms
 
     now = utime.ticks_ms()
-    if utime.ticks_diff(now, last_heartbeat_ms) >= HEARTBEAT_MS:
-        STATUS_LED.toggle()
-        last_heartbeat_ms = now
+    if utime.ticks_diff(now, last_led_blink_ms) >= LED_BLINK_MS:
+        ONBOARD_LED.toggle()
+        last_led_blink_ms = now
 
 
-# ----------------------- PIO frequency measurement -----------------------
+# PIO frequency measurement
 @asm_pio(sideset_init=PIO.OUT_HIGH)
 def gate():
     mov(x, osr)
@@ -92,6 +103,8 @@ _freq_ready = False
 def _counter_handler(sm):
     global _freq_ready
     if not _freq_ready:
+        # Prime the gate again for the next use. Weird-looking but matches the
+        # known working program, so that behavior is left alone.
         sm0.put(125_000)
         sm0.exec("pull()")
         _freq_data[0] = sm1.get()
@@ -131,7 +144,7 @@ def measure_frequency(collection_time_ms):
     timeout = collection_time_ms * 3
     start = utime.ticks_ms()
     while not _freq_ready:
-        update_status_led()
+        blink_onboard_led()
         if utime.ticks_diff(utime.ticks_ms(), start) > timeout:
             return -1.0
         utime.sleep_ms(1)
@@ -141,7 +154,7 @@ def measure_frequency(collection_time_ms):
     return pulse_ticks * (PIO_FREQ / clock_ticks)
 
 
-# ----------------------- UART and GPS -----------------------
+# UART and GPS
 # UART0 = Pi Zero: Pico GP0 TX -> Zero RX, Pico GP1 RX <- Zero TX
 # UART1 = GT-U7 GPS: Pico GP5 RX <- GPS TX. Pico GP4 TX is available if needed.
 uart_zero = UART(0, baudrate=9600, tx=Pin(0), rx=Pin(1), timeout=50)
@@ -215,23 +228,35 @@ def command_duration_ms(command):
     if not parts or parts[0] != "MEASURE":
         return None
     if len(parts) == 1:
-        return 1600  # Single 1.6 second measurement
+        return 1600
     try:
         return max(10, int(parts[1]))
     except ValueError:
         return None
 
 
-print("PICO READY")
+def send_gps_only():
+    # Give the GPS a longer drain here so charging mode actually gets fresh-ish
+    # data instead of whatever was in the buffer last loop.
+    drain_gps(250)
+    response = "GPS {} {}\n".format(last_lat, last_lon)
+    uart_zero.write(response)
+    print(response.strip())
+
+
+print("PICO READY CHARGE")
 
 while True:
-    update_status_led()
+    blink_onboard_led()
     drain_gps(5)
 
     command = read_command()
     duration_ms = command_duration_ms(command) if command else None
 
-    if duration_ms is not None:
+    if command == "GPS_ONLY":
+        send_gps_only()
+
+    elif duration_ms is not None:
         drain_gps(50)
         freq_hz = measure_frequency(duration_ms)
         drain_gps(100)

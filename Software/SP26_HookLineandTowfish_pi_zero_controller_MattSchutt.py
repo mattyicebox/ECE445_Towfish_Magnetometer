@@ -6,11 +6,12 @@ Workflow:
 1. L1 turns on for 1.6 s.
 2. L1 turns off.
 3. Wait GAP_AFTER_L1_MS.
-4. L2 turns on for 1.4 s.
+4. L2 turns on for 1.6 s.
 5. At L2 on, tell the Pico to measure over UART0.
-6. While L2 is on, collect IMU samples on the Zero.
-7. After L2 off, read frequency/GPS from the Pico, correct frequency, convert
-   to magnetic field, and append the row to CSV.
+6. While L2 is on, collect IMU samples on the Zero for the full measurement.
+7. After L2 off, read frequency/GPS from the Pico, correct frequency from the
+   orientation change during the measurement, convert to magnetic field, and
+   append the row to CSV.
 8. Wait 2 s and repeat.
 """
 
@@ -35,7 +36,7 @@ except ImportError:
         SMBus = None
 
 
-# ----------------------- User parameters -----------------------
+# User parameters
 L1_PIN = 17
 L2_PIN = 27
 
@@ -53,11 +54,12 @@ IMU_SAMPLE_HZ = 100
 I2C_BUS = 1
 MPU6050_ADDR = 0x68
 MAX_TILT_DEG = 45.0
+IMU_BASELINE_SAMPLES = 5
 
 GAMMA_P = 2.67522e8
 
 
-# ----------------------- Hardware helpers -----------------------
+# Hardware helpers
 class LedOutput:
     def __init__(self, pin):
         self.pin = pin
@@ -147,7 +149,7 @@ class ImuReader:
         return value
 
 
-# ----------------------- Math / logging -----------------------
+# Math and logging
 def frequency_to_field_nt(freq_hz):
     if freq_hz <= 0:
         return None
@@ -179,6 +181,84 @@ def estimate_roll_pitch_deg(imu_samples):
     return math.degrees(roll_rad), math.degrees(pitch_rad)
 
 
+def sample_roll_pitch_deg(sample):
+    try:
+        ax = float(sample.get("ax"))
+        ay = float(sample.get("ay"))
+        az = float(sample.get("az"))
+    except (TypeError, ValueError):
+        return None, None
+
+    roll_rad = math.atan2(ay, az)
+    pitch_rad = math.atan2(-ax, math.sqrt(ay * ay + az * az))
+    return math.degrees(roll_rad), math.degrees(pitch_rad)
+
+
+def orientation_samples_deg(imu_samples):
+    orientations = []
+    for sample in imu_samples:
+        roll_deg, pitch_deg = sample_roll_pitch_deg(sample)
+        if roll_deg is not None and pitch_deg is not None:
+            orientations.append((roll_deg, pitch_deg))
+    return orientations
+
+
+def mean_pair(pairs):
+    if not pairs:
+        return None, None
+    return (
+        sum(pair[0] for pair in pairs) / len(pairs),
+        sum(pair[1] for pair in pairs) / len(pairs),
+    )
+
+
+def angle_delta_deg(angle_deg, baseline_deg):
+    return (angle_deg - baseline_deg + 180.0) % 360.0 - 180.0
+
+
+def orientation_window_correction(imu_samples):
+    """
+    Build the field correction from relative orientation during the measurement.
+
+    The first few samples define the start orientation. Every later sample is
+    compared to that baseline, and the average projection factor is used because
+    the Pico frequency is collected over the whole L2 window.
+    """
+    orientations = orientation_samples_deg(imu_samples)
+    if not orientations:
+        return None, None, None, "no_imu_delta"
+
+    baseline_count = min(IMU_BASELINE_SAMPLES, len(orientations))
+    baseline_roll, baseline_pitch = mean_pair(orientations[:baseline_count])
+
+    projection_factors = []
+    delta_roll_values = []
+    delta_pitch_values = []
+
+    for roll_deg, pitch_deg in orientations:
+        delta_roll = angle_delta_deg(roll_deg, baseline_roll)
+        delta_pitch = angle_delta_deg(pitch_deg, baseline_pitch)
+
+        if abs(delta_roll) > MAX_TILT_DEG or abs(delta_pitch) > MAX_TILT_DEG:
+            return None, delta_roll, delta_pitch, "large_orientation_delta"
+
+        delta_roll_values.append(delta_roll)
+        delta_pitch_values.append(delta_pitch)
+
+        factor = tilt_correction_factor(delta_roll, delta_pitch)
+        if factor is None:
+            return None, delta_roll, delta_pitch, "invalid_orientation_delta"
+        projection_factors.append(factor)
+
+    if not projection_factors:
+        return None, None, None, "no_imu_delta"
+
+    correction_factor = sum(projection_factors) / len(projection_factors)
+    mean_delta_roll = sum(delta_roll_values) / len(delta_roll_values)
+    mean_delta_pitch = sum(delta_pitch_values) / len(delta_pitch_values)
+    return correction_factor, mean_delta_roll, mean_delta_pitch, "ok"
+
+
 def tilt_correction_factor(roll_deg, pitch_deg):
     if roll_deg is None or pitch_deg is None:
         return None
@@ -196,23 +276,20 @@ def tilt_correction_factor(roll_deg, pitch_deg):
 
 def correct_frequency(freq_hz, imu_samples):
     """
-    Tilt correction for a single-axis, Z-oriented sensor:
-    B_true = B_measured / (cos(pitch) * cos(roll)).
+    Differential-orientation correction for a single-axis, Z-oriented sensor.
 
-    Since B is proportional to frequency, the same factor can be applied to
-    frequency before converting frequency to magnetic field.
+    The Pico returns one frequency integrated over the measurement window, so
+    IMU samples from that whole window are converted into roll/pitch deltas
+    relative to the start of the measurement. Since B is proportional to
+    frequency, the averaged projection factor can be applied to frequency before
+    converting frequency to magnetic field.
     """
-    roll_deg, pitch_deg = estimate_roll_pitch_deg(imu_samples)
-    factor = tilt_correction_factor(roll_deg, pitch_deg)
+    factor, delta_roll_deg, delta_pitch_deg, status = orientation_window_correction(imu_samples)
 
-    # Skip correction if factor is invalid or tilt is too large
     if factor is None or abs(factor) < 1e-6:
-        return freq_hz, roll_deg, pitch_deg, factor, "no_imu_tilt"
+        return freq_hz, delta_roll_deg, delta_pitch_deg, factor, status
 
-    if abs(roll_deg) > MAX_TILT_DEG or abs(pitch_deg) > MAX_TILT_DEG:
-        return freq_hz, roll_deg, pitch_deg, factor, "large_tilt"
-
-    return freq_hz / factor, roll_deg, pitch_deg, factor, "ok"
+    return freq_hz / factor, delta_roll_deg, delta_pitch_deg, factor, "ok"
 
 
 def collect_imu_for_window(imu, duration_s):
@@ -251,7 +328,7 @@ def append_csv(path, row):
         writer.writerow(row)
 
 
-# ----------------------- Pico UART -----------------------
+# Pico UART
 def parse_pico_response(line):
     # Expected: DATA <lat> <lon> <freq_hz>
     parts = line.strip().split()
@@ -321,7 +398,11 @@ def main():
                 raw_freq,
                 imu_samples,
             )
-            print(f"Corrected: freq={corrected_freq}, roll={roll_deg}, pitch={pitch_deg}, factor={factor}, status={status}")
+            print(
+                "Corrected: "
+                f"freq={corrected_freq}, delta_roll={roll_deg}, "
+                f"delta_pitch={pitch_deg}, factor={factor}, status={status}"
+            )
             field_nt = frequency_to_field_nt(corrected_freq)
 
             row = [
